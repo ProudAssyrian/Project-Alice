@@ -412,7 +412,10 @@ enum class variable_type : uint16_t {
 	total,
 	infantry,
 	cavalry,
-	special
+	special,
+	//non-vanilla
+	fromcontinent,
+	fromcapital,
 };
 
 struct line_break { };
@@ -712,6 +715,7 @@ void load_text_data(sys::state& state, uint32_t language, parsers::error_handler
 char16_t win1250toUTF16(char in);
 std::string produce_simple_string(sys::state const& state, dcon::text_sequence_id id);
 std::string produce_simple_string(sys::state const& state, std::string_view key);
+dcon::text_sequence_id find_key(sys::state& state, std::string_view txt);
 dcon::text_sequence_id find_or_add_key(sys::state& state, std::string_view key);
 std::string date_to_string(sys::state const& state, sys::date date);
 
@@ -730,6 +734,7 @@ template<class T>
 std::string get_adjective_as_string(sys::state const& state, T t) {
 	return text::produce_simple_string(state, t.get_adjective());
 }
+std::string get_short_state_name(sys::state const& state, dcon::state_instance_id state_id);
 std::string get_dynamic_state_name(sys::state const& state, dcon::state_instance_id state_id);
 std::string get_province_state_name(sys::state const& state, dcon::province_id prov_id);
 std::string get_focus_category_name(sys::state const& state, nations::focus_type category);

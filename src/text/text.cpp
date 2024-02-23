@@ -560,6 +560,7 @@ variable_type variable_type_from_name(std::string_view v) {
 		CT_STRING_ENUM(tag_0_2_adj)
 		CT_STRING_ENUM(tag_0_3_adj)
 		CT_STRING_ENUM(temperature)
+		CT_STRING_ENUM(fromcapital)
 	} else if(v.length() == 12) {
 		if(false) { }
 		CT_STRING_ENUM(construction)
@@ -590,6 +591,7 @@ variable_type variable_type_from_name(std::string_view v) {
 		CT_STRING_ENUM(value_int_0_2)
 		CT_STRING_ENUM(value_int_0_3)
 		CT_STRING_ENUM(value_int_0_4)
+		CT_STRING_ENUM(fromcontinent)
 	} else if(v.length() == 14) {
 		if(false) { }
 		CT_STRING_ENUM(cb_target_name)
@@ -686,17 +688,24 @@ std::string produce_simple_string(sys::state const& state, std::string_view txt)
 	}
 }
 
-dcon::text_sequence_id find_or_add_key(sys::state& state, std::string_view txt) {
+dcon::text_sequence_id find_key(sys::state& state, std::string_view txt) {
 	auto it = state.key_to_text_sequence.find(lowercase_str(txt));
 	if(it != state.key_to_text_sequence.end()) {
 		return it->second;
-	} else {
+	}
+	return dcon::text_sequence_id{};
+}
+
+dcon::text_sequence_id find_or_add_key(sys::state& state, std::string_view txt) {
+	auto key = text::find_key(state, txt);
+	if(!key) {
 		auto new_key = state.add_to_pool_lowercase(txt);
 		std::string local_key_copy{ state.to_string_view(new_key) };
 		// TODO: eror handler
 		parsers::error_handler err("");
 		return create_text_entry(state, local_key_copy, txt, err);
 	}
+	return key;
 }
 
 
@@ -821,6 +830,22 @@ std::string prettify(int64_t num) {
 	}
 
 	return std::string("#inf");
+}
+
+std::string get_short_state_name(sys::state const& state, dcon::state_instance_id state_id) {
+	auto fat_id = dcon::fatten(state.world, state_id);
+	for(auto st : fat_id.get_definition().get_abstract_state_membership()) {
+		if(auto osm = st.get_province().get_state_membership().id; osm && fat_id.id != osm) {
+			if(!fat_id.get_definition().get_name()) {
+				return get_name_as_string(state, fat_id.get_capital());
+			} else {
+				return get_name_as_string(state, fat_id.get_definition());
+			}
+		}
+	}
+	if(!fat_id.get_definition().get_name())
+		return get_name_as_string(state, fat_id.get_capital());
+	return get_name_as_string(state, fat_id.get_definition());
 }
 
 std::string get_dynamic_state_name(sys::state const& state, dcon::state_instance_id state_id) {
@@ -1005,12 +1030,12 @@ void lb_finish_line(layout_base& dest, layout_box& box, int32_t line_height) {
 	if(dest.fixed_parameters.align == alignment::center) {
 		auto gap = (float(dest.fixed_parameters.right) - box.x_position) / 2.0f;
 		for(size_t i = box.line_start; i < dest.base_layout.contents.size(); ++i) {
-			dest.base_layout.contents[i].x += gap;
+			dest.base_layout.contents.at(i).x += gap;
 		}
 	} else if(dest.fixed_parameters.align == alignment::right) {
 		auto gap = float(dest.fixed_parameters.right) - box.x_position;
 		for(size_t i = box.line_start; i < dest.base_layout.contents.size(); ++i) {
-			dest.base_layout.contents[i].x += gap;
+			dest.base_layout.contents.at(i).x += gap;
 		}
 	}
 
@@ -1025,6 +1050,7 @@ void lb_finish_line(layout_base& dest, layout_box& box, int32_t line_height) {
 void add_line_break_to_layout_box(sys::state& state, layout_base& dest, layout_box& box) {
 	auto font_index = text::font_index_from_font_id(dest.fixed_parameters.font_id);
 	auto font_size = text::size_from_font_id(dest.fixed_parameters.font_id);
+	assert(font_index >= 1 && font_index <= 3);
 	auto& font = state.font_collection.fonts[font_index - 1];
 	auto text_height = int32_t(std::ceil(font.line_height(font_size)));
 	auto line_height = text_height + dest.fixed_parameters.leading;
@@ -1034,6 +1060,7 @@ void add_line_break_to_layout_box(sys::state& state, layout_base& dest, layout_b
 void add_line_break_to_layout(sys::state& state, columnar_layout& dest) {
 	auto font_index = text::font_index_from_font_id(dest.fixed_parameters.font_id);
 	auto font_size = text::size_from_font_id(dest.fixed_parameters.font_id);
+	assert(font_index >= 1 && font_index <= 3);
 	auto& font = state.font_collection.fonts[font_index - 1];
 	auto text_height = int32_t(std::ceil(font.line_height(font_size)));
 	auto line_height = text_height + dest.fixed_parameters.leading;
@@ -1043,6 +1070,7 @@ void add_line_break_to_layout(sys::state& state, columnar_layout& dest) {
 void add_line_break_to_layout(sys::state& state, endless_layout& dest) {
 	auto font_index = text::font_index_from_font_id(dest.fixed_parameters.font_id);
 	auto font_size = text::size_from_font_id(dest.fixed_parameters.font_id);
+	assert(font_index >= 1 && font_index <= 3);
 	auto& font = state.font_collection.fonts[font_index - 1];
 	auto text_height = int32_t(std::ceil(font.line_height(font_size)));
 	auto line_height = text_height + dest.fixed_parameters.leading;
@@ -1076,7 +1104,7 @@ void add_to_layout_box(sys::state& state, layout_base& dest, layout_box& box, st
 		auto next_wb = txt.find_first_of(" \r\n\t", end_position);
 		auto next_word = txt.find_first_not_of(" \r\n\t", next_wb);
 
-		if(txt.data()[end_position] == '\x97' && end_position + 2 < txt.length()) {
+		if(txt.at(end_position) == '\x97' && end_position + 2 < txt.length()) {
 			next_wb = end_position;
 			next_word = next_wb + 1;
 		}
@@ -1224,6 +1252,7 @@ void add_to_layout_box(sys::state& state, layout_base& dest, layout_box& box, dc
 	auto current_color = dest.fixed_parameters.color;
 	auto font_index = text::font_index_from_font_id(dest.fixed_parameters.font_id);
 	auto font_size = text::size_from_font_id(dest.fixed_parameters.font_id);
+	assert(font_index >= 1 && font_index <= 3);
 	auto& font = state.font_collection.fonts[font_index - 1];
 	auto text_height = int32_t(std::ceil(font.line_height(font_size)));
 	auto line_height = text_height + dest.fixed_parameters.leading;

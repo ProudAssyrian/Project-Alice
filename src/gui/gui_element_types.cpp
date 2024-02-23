@@ -525,12 +525,34 @@ void line_graph::set_data_points(sys::state& state, std::vector<float> const& da
 	lines.set_y(scaled_datapoints.data());
 }
 
+void line_graph::set_data_points(sys::state& state, std::vector<float> const& datapoints, float min, float max) noexcept {
+	assert(datapoints.size() == count);
+	float y_height = max - min;
+	std::vector<float> scaled_datapoints = std::vector<float>(count);
+	if(y_height == 0.f) {
+		for(size_t i = 0; i < count; i++) {
+			scaled_datapoints[i] = .5f;
+		}
+	} else {
+		for(size_t i = 0; i < count; i++) {
+			scaled_datapoints[i] = (datapoints[i] - min) / y_height;
+		}
+	}
+
+
+	lines.set_y(scaled_datapoints.data());
+}
+
 void line_graph::on_create(sys::state& state) noexcept {
 	element_base::on_create(state);
 }
 
 void line_graph::render(sys::state& state, int32_t x, int32_t y) noexcept {
-	ogl::render_linegraph(state, ogl::color_modification::none, float(x), float(y), base_data.size.x, base_data.size.y, lines);
+	if(!is_coloured) {
+		ogl::render_linegraph(state, ogl::color_modification::none, float(x), float(y), base_data.size.x, base_data.size.y, lines);
+	} else {
+		ogl::render_linegraph(state, ogl::color_modification::none, float(x), float(y), base_data.size.x, base_data.size.y, r, g, b, lines);
+	}	
 }
 
 void simple_text_element_base::set_text(sys::state& state, std::string const& new_text) {
@@ -1113,6 +1135,7 @@ void scrollable_text::on_create(sys::state& state) noexcept {
 	res->base_data.position.y = 0;
 	res->on_create(state);
 	delegate = res.get();
+	delegate->base_data.flags &= ~uint8_t(ui::element_data::orientation_mask);
 	add_child_to_front(std::move(res));
 
 	auto ptr = make_element_by_type<multiline_text_scrollbar>(state, "standardlistbox_slider");
@@ -1598,7 +1621,9 @@ void overlapping_truce_flags::on_update(sys::state& state) noexcept {
 	for(auto rel : state.world.nation_get_diplomatic_relation(current_nation)) {
 		if(rel.get_truce_until() && state.current_date < rel.get_truce_until()) {
 			auto other = rel.get_related_nations(0) != current_nation ? rel.get_related_nations(0) : rel.get_related_nations(1);
-			row_contents.push_back(truce_pair{other, rel.get_truce_until()});
+			if(!military::are_at_war(state, current_nation, other)) {
+				row_contents.push_back(truce_pair{ other, rel.get_truce_until() });
+			}
 		}
 	}
 	update(state);
@@ -1831,11 +1856,17 @@ void scrollbar_left::button_action(sys::state& state) noexcept {
 void scrollbar_left::button_shift_action(sys::state& state) noexcept {
 	send(state, parent, value_change{ -step_size * 5, true, true });
 }
+void scrollbar_left::button_shift_right_action(sys::state& state) noexcept {
+	send(state, parent, value_change{ -step_size * 10000, true, true });
+}
 void scrollbar_right::button_action(sys::state& state) noexcept {
 	send(state, parent, value_change{ step_size, true, true });
 }
 void scrollbar_right::button_shift_action(sys::state& state) noexcept {
 	send(state, parent, value_change{ step_size * 5, true, true });
+}
+void scrollbar_right::button_shift_right_action(sys::state& state) noexcept {
+	send(state, parent, value_change{ step_size * 10000, true, true });
 }
 
 message_result scrollbar_right::set(sys::state& state, Cyto::Any& payload) noexcept {
@@ -2161,6 +2192,10 @@ void unit_frame_bg::update_tooltip(sys::state& state, int32_t x, int32_t y, text
 		single_unit_tooltip(state, contents, std::get<dcon::army_id>(display_unit));
 	else if(std::holds_alternative<dcon::navy_id>(display_unit))
 		single_unit_tooltip(state, contents, std::get<dcon::navy_id>(display_unit));
+	text::add_line(state, contents, "alice_utt_controls_1");
+	text::add_line(state, contents, "alice_utt_controls_2");
+	if(state.network_mode != sys::network_mode_type::single_player)
+		text::add_line(state, contents, "alice_utt_controls_3");
 }
 
 void populate_shortcut_tooltip(sys::state& state, ui::element_base& elm, text::columnar_layout& contents) noexcept {

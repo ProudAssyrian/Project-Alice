@@ -1,6 +1,7 @@
 #include "map_tooltip.hpp"
 #include "demographics.hpp"
 #include "rebels.hpp"
+#include "unit_tooltip.hpp"
 
 namespace ui {
 
@@ -12,6 +13,9 @@ void country_name_box(sys::state& state, text::columnar_layout& contents, dcon::
 	if(state.cheat_data.show_province_id_tooltip) {
 		text::add_to_layout_box(state, contents, box, std::string_view{ "PROVID: " });
 		text::add_to_layout_box(state, contents, box, prov.index());
+		text::add_line_break_to_layout_box(state, contents, box);
+		text::add_to_layout_box(state, contents, box, std::string_view{ "TAG: " });
+		text::add_to_layout_box(state, contents, box, nations::int_to_tag(owner.get_identity_from_identity_holder().get_identifying_int()));
 		text::add_divider_to_layout_box(state, contents, box);
 	}
 
@@ -32,6 +36,21 @@ void country_name_box(sys::state& state, text::columnar_layout& contents, dcon::
 		text::add_line(state, contents, "alice_supply_limit_desc", text::variable_type::x, text::int_wholenum{ military::supply_limit_in_province(state, state.local_player_nation, fat) });
 		ui::active_modifiers_description(state, contents, state.local_player_nation, 0, sys::national_mod_offsets::supply_limit, true);
 		ui::active_modifiers_description(state, contents, fat, 0, sys::provincial_mod_offsets::supply_limit, true);
+
+		for(const auto a : state.selected_armies) {
+			auto controller = dcon::fatten(state.world, state.local_player_nation);
+			ui::unitamounts amounts = ui::calc_amounts_from_army(state, dcon::fatten(state.world, a));
+			text::substitution_map sub{};
+			auto tag_str = std::string("@") + nations::int_to_tag(controller.get_identity_from_identity_holder().get_identifying_int()) + "\x03";
+			text::add_to_substitution_map(sub, text::variable_type::m, std::string_view{ tag_str });
+			text::add_to_substitution_map(sub, text::variable_type::n, int64_t(amounts.type1));
+			text::add_to_substitution_map(sub, text::variable_type::x, int64_t(amounts.type2));
+			text::add_to_substitution_map(sub, text::variable_type::y, int64_t(amounts.type3));
+			text::add_to_substitution_map(sub, text::variable_type::val, text::fp_two_places{ military::relative_attrition_amount(state, a, prov) });
+			box = text::open_layout_box(contents);
+			text::localised_format_box(state, contents, box, "alice_unit_relative_attrition", sub);
+			text::close_layout_box(contents, box);
+		}
 	} else if(state.selected_navies.size() > 0) {
 		text::add_line(state, contents, "alice_supply_limit_desc", text::variable_type::x, text::int_wholenum{ military::supply_limit_in_province(state, state.local_player_nation, fat) });
 		ui::active_modifiers_description(state, contents, state.local_player_nation, 0, sys::national_mod_offsets::supply_limit, true);
@@ -77,7 +96,7 @@ void political_map_tt_box(sys::state& state, text::columnar_layout& contents, dc
 	}
 }
 
-void revolt_map_tt_box(sys::state& state, text::columnar_layout& contents, dcon::province_id prov) {  // Done
+void militancy_map_tt_box(sys::state& state, text::columnar_layout& contents, dcon::province_id prov) {  // Done
 	auto fat = dcon::fatten(state.world, prov);
 	country_name_box(state, contents, prov);
 
@@ -1001,6 +1020,53 @@ void growth_map_tt_box(sys::state& state, text::columnar_layout& contents, dcon:
 	}
 }
 
+void revolt_map_tt_box(sys::state& state, text::columnar_layout& contents, dcon::province_id prov) {
+	auto fat = dcon::fatten(state.world, prov);
+	country_name_box(state, contents, prov);
+
+	if(prov.value < state.province_definitions.first_sea_province.value) {
+		auto total_rebels = 0.f;
+		std::vector<std::pair<dcon::rebel_faction_id, float>> rebel_factions;
+		for(auto pop : fat.get_pop_location()) {
+			if(pop.get_pop().get_pop_rebellion_membership().get_rebel_faction()) {
+				auto fid = pop.get_pop().get_pop_rebellion_membership().get_rebel_faction().id;
+				auto rebel_pop = pop.get_pop().get_size();
+				auto f = std::find_if(rebel_factions.begin(), rebel_factions.end(), [fid](const auto& pair) {
+					return pair.first == fid;
+				});
+				if(f != rebel_factions.end()) {
+					f->second += rebel_pop;
+				} else {
+					rebel_factions.push_back(std::make_pair(fid, rebel_pop));
+				}
+				total_rebels += pop.get_pop().get_size();
+			}
+		}
+		std::sort(rebel_factions.begin(), rebel_factions.end(), [&](auto a, auto b) {return a.second > b.second; });
+
+		auto box = text::open_layout_box(contents);
+
+		if(total_rebels <= 0.f) {
+			text::localised_format_box(state, contents, box, std::string_view("mtt_rebels_none"));
+		} else {
+			text::localised_format_box(state, contents, box, std::string_view("mtt_rebels_amount"));
+			text::add_to_layout_box(state, contents, box, text::prettify(int64_t(total_rebels)), text::text_color::yellow);
+
+			for(size_t i = 0; i < rebel_factions.size(); i++) {
+				text::add_line_break_to_layout_box(state, contents, box);
+				text::add_space_to_layout_box(state, contents, box);
+				text::add_to_layout_box(state, contents, box, rebel::rebel_name(state, rebel_factions[i].first), text::text_color::yellow);
+				text::add_space_to_layout_box(state, contents, box);
+				text::add_to_layout_box(state, contents, box, std::string_view("("), text::text_color::white);
+				text::add_to_layout_box(state, contents, box, text::prettify(int64_t(rebel_factions[i].second)), text::text_color::white);
+				text::add_to_layout_box(state, contents, box, std::string_view(")"), text::text_color::white);
+			}
+		}
+
+		text::close_layout_box(contents, box);
+	}
+}
+
 void populate_map_tooltip(sys::state& state, text::columnar_layout& contents, dcon::province_id prov) {
 	switch(state.map_state.active_map_mode) {
 	case map_mode::mode::terrain:
@@ -1101,6 +1167,9 @@ void populate_map_tooltip(sys::state& state, text::columnar_layout& contents, dc
 		break;
 	case map_mode::mode::growth:
 		growth_map_tt_box(state, contents, prov);
+		break;
+	case map_mode::mode::militancy:
+		militancy_map_tt_box(state, contents, prov);
 		break;
 	default:
 		break;

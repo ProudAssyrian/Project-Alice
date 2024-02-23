@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #endif // ...
+#include <string_view>
 #include "system_state.hpp"
 #include "commands.hpp"
 #include "SPSCQueue.h"
@@ -323,7 +324,7 @@ static socket_t socket_init_client(struct sockaddr_in6& client_address, const ch
 static dcon::nation_id get_temp_nation(sys::state& state) {
 	// give the client a "joining" nation, basically a temporal nation choosen
 	// "randomly" that is tied to the client iself
-	for(auto n : state.world.in_nation)
+	for(auto n : state.nations_by_rank)
 		if(!state.world.nation_get_is_player_controlled(n) && state.world.nation_get_owned_province_count(n) > 0)
 			return n;
 	return dcon::nation_id{ };
@@ -370,8 +371,10 @@ void init(sys::state& state) {
 	}
 }
 
-static void disconnect_client(sys::state& state, client_data& client) {
-	command::notify_player_leaves(state, client.playing_as);
+static void disconnect_client(sys::state& state, client_data& client, bool graceful) {
+	if(command::can_notify_player_leaves(state, client.playing_as, graceful)) {
+		command::notify_player_leaves(state, client.playing_as, graceful);
+	}
 	socket_shutdown(client.socket_fd);
 	client.socket_fd = 0;
 	client.send_buffer.clear();
@@ -550,7 +553,7 @@ static void receive_from_clients(sys::state& state) {
 		if(client.handshake) {
 			r = socket_recv(client.socket_fd, &client.hshake_buffer, sizeof(client.hshake_buffer), &client.recv_count, [&]() {
 				if(std::memcmp(client.hshake_buffer.password, state.network_state.password, sizeof(state.network_state.password)) != 0) {
-					disconnect_client(state, client);
+					disconnect_client(state, client, false);
 					return;
 				}
 				send_post_handshake_commands(state, client);
@@ -571,7 +574,6 @@ static void receive_from_clients(sys::state& state) {
 				case command::command_type::notify_stop_game:
 				case command::command_type::notify_pause_game:
 				case command::command_type::notify_player_joins:
-				case command::command_type::notify_player_leaves:
 				case command::command_type::save_game:
 					break; // has to be valid/sendable by client
 				default:
@@ -592,7 +594,7 @@ static void receive_from_clients(sys::state& state) {
 #if !defined(NDEBUG) && defined(_WIN32)
 			state.console_log("host:disconnect: in-receive err=" + std::to_string(int32_t(r)) + "::" + get_wsa_error_text(WSAGetLastError()));
 #endif
-			disconnect_client(state, client);
+			network::disconnect_client(state, client, false);
 		}
 	}
 }
@@ -671,11 +673,11 @@ static void accept_new_clients(sys::state& state) {
 			client.socket_fd = accept(state.network_state.socket_fd, (struct sockaddr*)&client.v4_address, &addr_len);
 		}
 		if(client.is_banned(state)) {
-			disconnect_client(state, client);
+			disconnect_client(state, client, false);
 			break;
 		}
 		if(state.mode == sys::game_mode_type::end_screen) {
-			disconnect_client(state, client);
+			disconnect_client(state, client, false);
 			break;
 		}
 		/* Send it data so she is in sync with everyone else! */
@@ -747,7 +749,7 @@ void send_and_receive_commands(sys::state& state) {
 #if !defined(NDEBUG) && defined(_WIN32)
 						state.console_log("host:disconnect: in-send-EARLY err=" + std::to_string(int32_t(r)) + "::" + get_wsa_error_text(WSAGetLastError()));
 #endif
-						disconnect_client(state, client);
+						disconnect_client(state, client, false);
 						continue;
 					}
 					client.total_sent_bytes += old_size - client.early_send_buffer.size();
@@ -764,7 +766,7 @@ void send_and_receive_commands(sys::state& state) {
 #if !defined(NDEBUG) && defined(_WIN32)
 						state.console_log("host:disconnect: in-send-INGAME err=" + std::to_string(int32_t(r)) + "::" + get_wsa_error_text(WSAGetLastError()));
 #endif
-						disconnect_client(state, client);
+						disconnect_client(state, client, false);
 						continue;
 					}
 					client.total_sent_bytes += old_size - client.send_buffer.size();
@@ -932,6 +934,38 @@ void send_and_receive_commands(sys::state& state) {
 void finish(sys::state& state) {
 	if(state.network_mode == sys::network_mode_type::single_player)
 		return; // Do nothing in singleplayer
+
+	if(state.network_mode == sys::network_mode_type::client) {
+		if(!state.network_state.save_stream) {
+			// send the outgoing commands to the server and flush the entire queue
+			{
+				auto* c = state.network_state.outgoing_commands.front();
+				while(c) {
+					if(c->type == command::command_type::save_game) {
+						command::execute_command(state, *c);
+					} else {
+						socket_add_to_send_queue(state.network_state.send_buffer, c, sizeof(*c));
+					}
+					state.network_state.outgoing_commands.pop();
+					c = state.network_state.outgoing_commands.front();
+				}
+			}
+			command::payload c;
+			memset(&c, 0, sizeof(c));
+			c.type = command::command_type::notify_player_leaves;
+			c.source = state.local_player_nation;
+			c.data.notify_leave.make_ai = true;
+			socket_add_to_send_queue(state.network_state.send_buffer, &c, sizeof(c));
+			while(state.network_state.send_buffer.size() > 0) {
+				if(socket_send(state.network_state.socket_fd, state.network_state.send_buffer) != 0) { // error
+#ifdef _WIN64
+					MessageBoxA(NULL, ("Network client command send error: " + get_wsa_error_text(WSAGetLastError())).c_str(), "Network error", MB_OK);
+#endif
+					std::abort();
+				}
+			}
+		}
+	}
 	
 	socket_shutdown(state.network_state.socket_fd);
 #ifdef _WIN64

@@ -193,7 +193,7 @@ void state::on_lbutton_down(int32_t x, int32_t y, key_modifiers mod) {
 					local_player_nation = owner;
 					world.nation_set_is_player_controlled(local_player_nation, true);
 					ui_state.nation_picker->impl_on_update(*this);
-				} else {
+				} else if(command::can_notify_player_picks_nation(*this, local_player_nation, owner)) {
 					command::notify_player_picks_nation(*this, local_player_nation, owner);
 				}
 			}
@@ -451,6 +451,19 @@ void state::on_key_down(virtual_key keycode, key_modifiers mod) {
 			keycode = sys::virtual_key::SUBTRACT;
 		else if(keycode == sys::virtual_key::PLUS)
 			keycode = sys::virtual_key::ADD;
+		if(cheat_data.wasd_move_cam) {
+			if(keycode == sys::virtual_key::W)
+				keycode = sys::virtual_key::UP;
+			else
+			if(keycode == sys::virtual_key::A)
+				keycode = sys::virtual_key::LEFT;
+			else
+			if(keycode == sys::virtual_key::S)
+				keycode = sys::virtual_key::DOWN;
+			else
+			if(keycode == sys::virtual_key::D)
+				keycode = sys::virtual_key::RIGHT;
+		}
 		if(ui_state.root->impl_on_key_down(*this, keycode, mod) != ui::message_result::consumed) {
 			if(keycode == virtual_key::ESCAPE) {
 				if(ui_state.console_window->is_visible()) {
@@ -485,6 +498,20 @@ void state::on_key_down(virtual_key keycode, key_modifiers mod) {
 void state::on_key_up(virtual_key keycode, key_modifiers mod) {
 	if(keycode == virtual_key::CONTROL)
 		ui_state.ctrl_held_down = false;
+
+	if(cheat_data.wasd_move_cam) {
+		if(keycode == sys::virtual_key::W)
+			keycode = sys::virtual_key::UP;
+		else
+		if(keycode == sys::virtual_key::A)
+			keycode = sys::virtual_key::LEFT;
+		else
+		if(keycode == sys::virtual_key::S)
+			keycode = sys::virtual_key::DOWN;
+		else
+		if(keycode == sys::virtual_key::D)
+			keycode = sys::virtual_key::RIGHT;
+	}
 
 	map_state.on_key_up(keycode, mod);
 }
@@ -1278,13 +1305,6 @@ void state::render() { // called to render the frame may (and should) delay retu
 					case message_base_type::navy_built:
 						sound::play_effect(*this, sound::get_navy_built_sound(*this), user_settings.effects_volume * user_settings.master_volume);
 						break;
-					case message_base_type::province_event:
-						sound::play_effect(*this, sound::get_minor_event_sound(*this), user_settings.effects_volume * user_settings.master_volume);
-						break;
-					case message_base_type::national_event:
-					case message_base_type::major_event:
-						sound::play_effect(*this, sound::get_major_event_sound(*this), user_settings.effects_volume * user_settings.master_volume);
-						break;
 					case message_base_type::alliance_declined:
 					case message_base_type::ally_called_declined:
 					case message_base_type::crisis_join_offer_declined:
@@ -1299,6 +1319,11 @@ void state::render() { // called to render the frame may (and should) delay retu
 					case message_base_type::crisis_resolution_accepted:
 					case message_base_type::mil_access_start:
 						sound::play_effect(*this, sound::get_accept_sound(*this), user_settings.effects_volume * user_settings.master_volume);
+						break;
+					case message_base_type::province_event:
+					case message_base_type::national_event:
+					case message_base_type::major_event:
+						//Sound effect is played on above logic (free/non-free loop events above)
 						break;
 					default:
 						break;
@@ -1565,6 +1590,10 @@ void state::render() { // called to render the frame may (and should) delay retu
 
 	ui_state.relative_mouse_location = mouse_probe.relative_location;
 
+	if(ui_state.tl_chat_list) {
+		ui_state.root->move_child_to_front(ui_state.tl_chat_list);
+	}
+
 	if(map_state.get_zoom() > 5) {
 		if(!ui_state.ctrl_held_down) {
 			if(map_state.active_map_mode == map_mode::mode::rgo_output) {
@@ -1717,9 +1746,9 @@ void state::on_create() {
 		new_elm->base_data.position.x += 156; // nudge
 		new_elm->base_data.position.y += 24; // nudge
 		new_elm->impl_on_update(*this);
+		ui_state.tl_chat_list = new_elm.get();
 		ui_state.root->add_child_to_front(std::move(new_elm));
 	}
-
 	{
 		auto window = ui::make_element_by_type<ui::console_window>(*this, "console_wnd");
 		ui_state.console_window = window.get();
@@ -2097,6 +2126,10 @@ void state::save_user_settings() const {
 	US_SAVE(zoom_mode);
 	US_SAVE(vassal_color);
 	US_SAVE(left_mouse_click_hold_and_release);
+	US_SAVE(render_models);
+	US_SAVE(mouse_edge_scrolling);
+	US_SAVE(black_map_font);
+	US_SAVE(spoilers);
 #undef US_SAVE
 
 	simple_fs::write_file(settings_location, NATIVE("user_settings.dat"), &buffer[0], uint32_t(ptr - buffer));
@@ -2153,6 +2186,10 @@ void state::load_user_settings() {
 			US_LOAD(zoom_mode);
 			US_LOAD(vassal_color);
 			US_LOAD(left_mouse_click_hold_and_release);
+			US_LOAD(render_models);
+			US_LOAD(mouse_edge_scrolling);
+			US_LOAD(black_map_font);
+			US_LOAD(spoilers);
 #undef US_LOAD
 		} while(false);
 
@@ -2836,6 +2873,15 @@ void state::load_scenario_data(parsers::error_handler& err) {
 			std::to_string(startdate.year) + "." + std::to_string(startdate.month) + "." + std::to_string(startdate.day);
 		auto date_directory = open_directory(pop_history, simple_fs::utf8_to_native(start_dir_name));
 
+
+		// NICK: 
+		// Attempts to look through the start date as defined by the mod.
+		// If it does not find any pop files there, it defaults to looking through 1836.1.1
+		// This is to deal with mods that have their start date defined as something else, but have pop history within 1836.1.1 (converters).
+		auto directory_file_count = list_files(date_directory, NATIVE(".txt")).size();
+		if(directory_file_count == 0)
+			date_directory = open_directory(pop_history, simple_fs::utf8_to_native("1836.1.1"));
+
 		for(auto pop_file : list_files(date_directory, NATIVE(".txt"))) {
 			auto opened_file = open_file(pop_file);
 			if(opened_file) {
@@ -2843,6 +2889,18 @@ void state::load_scenario_data(parsers::error_handler& err) {
 				auto content = view_contents(*opened_file);
 				parsers::token_generator gen(content.data, content.data + content.file_size);
 				parsers::parse_pop_history_file(gen, err, context);
+			}
+		}
+
+		// Modding extension:
+		// Support loading pops from a CSV file, this to condense them better and allow
+		// for them to load faster and better ordered, editable with a spreadsheet program
+		for(auto pop_file : list_files(date_directory, NATIVE(".csv"))) {
+			auto opened_file = open_file(pop_file);
+			if(opened_file) {
+				err.file_name = simple_fs::native_to_utf8(get_full_name(*opened_file));
+				auto content = view_contents(*opened_file);
+				parsers::parse_csv_pop_history_file(*this, content.data, content.data + content.file_size, err, context);
 			}
 		}
 	}
@@ -3469,20 +3527,11 @@ void state::load_scenario_data(parsers::error_handler& err) {
 		}
 	});
 
-	if(err.accumulated_errors.size() == 0) {
-		// run the economy for three days on scenario creation
-		economy::update_rgo_employment(*this);
-		economy::update_factory_employment(*this);
-		economy::daily_update(*this);
+	
 
-		economy::update_rgo_employment(*this);
-		economy::update_factory_employment(*this);
-		economy::daily_update(*this);
-
-		economy::update_rgo_employment(*this);
-		economy::update_factory_employment(*this);
-		economy::daily_update(*this);
-	}
+	if(err.accumulated_errors.size() == 0)
+		economy::presimulate(*this);
+	
 
 	ai::identify_focuses(*this);
 	ai::initialize_ai_tech_weights(*this);
@@ -4310,17 +4359,6 @@ sys::checksum_key state::get_save_checksum() {
 
 	checksum_key key;
 	blake2b(&key, sizeof(key), buffer.get(), total_size_used, nullptr, 0);
-	return key;
-}
-
-sys::checksum_key state::get_scenario_checksum() {
-	auto scenario_space = sizeof_scenario_section(*this);
-	auto buffer = std::unique_ptr<uint8_t[]>(new uint8_t[scenario_space]);
-	auto last_written = write_scenario_section(buffer.get(), *this);
-	int32_t last_written_count = int32_t(last_written - buffer.get());
-	assert(size_t(last_written_count) == scenario_space);
-	checksum_key key;
-	blake2b(&key, sizeof(key), buffer.get(), last_written_count, nullptr, 0);
 	return key;
 }
 
